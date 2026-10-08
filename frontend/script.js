@@ -462,6 +462,15 @@ async function createPeer(id, name, initiator) {
 		if (isScreenTrack) {
 			pinnedParticipantId = tileId;
 			setActiveSpeaker(tileId);
+			track.addEventListener('unmute', () => {
+				const presentationTile = document.getElementById(`tile-${tileId}`);
+				const presentationVideo = presentationTile?.querySelector('video');
+				if (!presentationTile || !presentationVideo) return;
+				updateBadges(tileId);
+				presentationVideo.play().catch(() => {});
+				pinnedParticipantId = tileId;
+				setActiveSpeaker(tileId);
+			}, { once: true });
 		}
 	};
 	connection.onconnectionstatechange = () => {
@@ -809,9 +818,24 @@ $('new-meeting-button').addEventListener('click', () => {
 $('get-link-button').addEventListener('click', async () => {
 	const room = $('room').value.trim() || createRoomCode();
 	$('room').value = room;
-	$('invite-link').value = meetingLink(room);
+	const inviteLink = meetingLink(room);
+	$('invite-link').value = inviteLink;
 	$('invite-box').classList.remove('hidden');
-	try { await navigator.clipboard.writeText($('invite-link').value); $('copy-invite-button').textContent = 'Copied'; window.setTimeout(() => { $('copy-invite-button').textContent = 'Copy'; }, 1800); } catch { $('copy-invite-button').textContent = 'Copy link'; }
+	if (navigator.share) {
+		try {
+			await navigator.share({ title: 'Gather meeting', text: 'Join my Gather meeting', url: inviteLink });
+			return;
+		} catch (error) {
+			if (error.name === 'AbortError') return;
+		}
+	}
+	try {
+		await navigator.clipboard.writeText(inviteLink);
+		$('copy-invite-button').textContent = 'Copied';
+		window.setTimeout(() => { $('copy-invite-button').textContent = 'Copy'; }, 1800);
+	} catch {
+		$('copy-invite-button').textContent = 'Copy link';
+	}
 });
 $('copy-invite-button').addEventListener('click', async () => {
 	try { await navigator.clipboard.writeText($('invite-link').value); $('copy-invite-button').textContent = 'Copied'; window.setTimeout(() => { $('copy-invite-button').textContent = 'Copy'; }, 1800); } catch { $('invite-link').select(); }

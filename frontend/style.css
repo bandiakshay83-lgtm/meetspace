@@ -318,6 +318,10 @@ body { background: var(--paper); }
 .meeting-screen .utility-panel, .meeting-screen .chat-panel, .meeting-screen .host-panel, .meeting-screen .file-panel { background: #171d1b; color: #edf2ef; border-color: rgba(255, 255, 255, .1); }
 .meeting-screen .more-tile, .meeting-screen .more-wide-tile { background: #202825; color: #edf2ef; border-color: #303b35; }
 .meeting-screen .more-tile small, .meeting-screen .more-wide-tile small, .meeting-screen .panel-hint { color: #aeb9b3; }
+.meeting-screen .utility-panel .secondary-button, .meeting-screen .utility-panel .settings-option, .meeting-screen .utility-panel .settings-link, .meeting-screen .utility-panel .utility-section > label { color: #edf2ef !important; }
+.meeting-screen .utility-panel .secondary-button { background: #202825; border-color: #35413a; }
+.meeting-screen .utility-panel .secondary-button:hover { background: #2a3630; border-color: #506054; }
+.meeting-screen .utility-panel .settings-option small, .meeting-screen .utility-panel .settings-group h4 { color: #aeb9b3; }
 .meeting-screen .chat-form input, .meeting-screen .utility-section input, .meeting-screen .utility-section select, .meeting-screen .utility-section textarea { background: #101413; color: #edf2ef; border-color: #35413a; }
 .reaction-picker { bottom: 82px; border-radius: 8px; }
 
@@ -396,6 +400,7 @@ body { background: var(--paper); }
 .reaction-picker { position: fixed; top: auto; right: auto; bottom: 88px; left: 50%; transform: translateX(-50%); z-index: 30; }
 .reaction-picker button { display: grid; flex: 0 0 38px; place-items: center; }
 .meeting-screen .controls { position: relative; z-index: 12; min-height: 76px; }
+.meeting-screen .reaction-layer { z-index: 14; }
 
 @media (max-width: 800px) {
     .meeting-duration { margin-left: 5px; padding: 3px 5px; font-size: 9px; }
