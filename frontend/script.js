@@ -23,6 +23,7 @@ const raisedHandNotifications = new Map();
 const audioAnalyzers = new Map();
 let audioContext;
 let activeSpeakerId = null;
+let pinnedParticipantId = null;
 let activeSpeakerCandidate = null;
 let activeSpeakerCandidateSince = 0;
 let activeSpeakerLastHeard = 0;
@@ -50,6 +51,16 @@ function addVideo(id, name, stream, local = false) {
 		tile.querySelector('.avatar-letter').textContent = name.charAt(0).toUpperCase();
 		tile.querySelector('.avatar-name').textContent = local ? `${name} (You)` : name;
 		tile.querySelector('.tile-name').textContent = local ? `${name} (You)` : name;
+		tile.addEventListener('click', () => {
+			if (pinnedParticipantId === id) {
+				pinnedParticipantId = null;
+				setActiveSpeaker(chooseFallbackSpeaker(id));
+			} else {
+				pinnedParticipantId = id;
+				activeSpeakerCandidate = null;
+				setActiveSpeaker(id);
+			}
+		});
 		videoGrid.appendChild(tile);
 	}
 	const video = tile.querySelector('video');
@@ -91,30 +102,54 @@ function setupAudioAnalyser(id, video, stream, local) {
 	}
 }
 
+function chooseFallbackSpeaker(excludedId = null) {
+	const candidates = [...videoGrid.querySelectorAll('.video-tile')].filter((tile) => tile.id !== `tile-${excludedId}`);
+	const hostTile = candidates.find((tile) => participants.get(tile.id.slice(5))?.isHost);
+	const remoteTile = candidates.find((tile) => !tile.classList.contains('local-tile'));
+	return (hostTile || remoteTile || candidates[0])?.id.slice(5) || null;
+}
+
 function setActiveSpeaker(id) {
-	if (screenStream && id) return;
+	const tiles = [...videoGrid.querySelectorAll('.video-tile')];
+	if (id && !tiles.some((tile) => tile.id === `tile-${id}`)) id = chooseFallbackSpeaker();
+	const layoutIsCurrent = id
+		? tiles.every((tile) => tile.parentElement === (tile.id === `tile-${id}` ? speakerStage : participantRail))
+		: tiles.every((tile) => tile.parentElement === videoGrid);
+	if (activeSpeakerId === id && layoutIsCurrent) return;
+	if (tiles.length < 2 || !id) {
+		activeSpeakerId = null;
+		videoGrid.classList.remove('active-speaker-mode');
+		tiles.forEach((tile) => {
+			tile.classList.remove('main-speaker', 'speaker-thumbnail', 'self-preview', 'active-speaker');
+			videoGrid.appendChild(tile);
+		});
+		speakerLayout.classList.add('hidden');
+		return;
+	}
 	if (activeSpeakerId !== id) {
 		activeSpeakerId = id;
 		activeSpeakerLastSwitch = performance.now();
 	}
-	const tiles = [...videoGrid.querySelectorAll('.video-tile')];
-	videoGrid.classList.toggle('active-speaker-mode', Boolean(id));
+	videoGrid.classList.add('active-speaker-mode');
 	tiles.forEach((tile) => {
-		const tileId = tile.id.slice(5);
-		const isMainSpeaker = Boolean(id && tileId === id);
-		const isSelfPreview = Boolean(id && !isMainSpeaker && tile.classList.contains('local-tile'));
+		const isMainSpeaker = tile.id === `tile-${id}`;
 		tile.classList.toggle('main-speaker', isMainSpeaker);
-		tile.classList.toggle('speaker-thumbnail', Boolean(id && tileId !== id && !isSelfPreview));
-		tile.classList.toggle('self-preview', isSelfPreview);
+		tile.classList.toggle('speaker-thumbnail', !isMainSpeaker);
+		tile.classList.remove('self-preview');
 		tile.classList.toggle('active-speaker', isMainSpeaker);
-		if (!id) videoGrid.appendChild(tile);
-		else (isMainSpeaker || isSelfPreview ? speakerStage : participantRail).appendChild(tile);
+		(isMainSpeaker ? speakerStage : participantRail).appendChild(tile);
 	});
-	speakerLayout.classList.toggle('hidden', !id);
+	speakerLayout.classList.remove('hidden');
 }
 
 function updateActiveSpeaker() {
-	if (!screenStream && audioAnalyzers.size && participants.size > 1) {
+	if (pinnedParticipantId && document.getElementById(`tile-${pinnedParticipantId}`)) {
+		setActiveSpeaker(pinnedParticipantId);
+	} else if (screenStream && document.getElementById(`tile-presentation-${socket.id}`)) {
+		pinnedParticipantId = `presentation-${socket.id}`;
+		setActiveSpeaker(pinnedParticipantId);
+	} else if (!screenStream && audioAnalyzers.size && participants.size > 1) {
+		if (!activeSpeakerId) setActiveSpeaker(chooseFallbackSpeaker());
 		let loudestId = null;
 		let loudestLevel = 0;
 		for (const [id, entry] of audioAnalyzers) {
@@ -144,7 +179,7 @@ function updateActiveSpeaker() {
 			}
 		} else if (activeSpeakerId && now - activeSpeakerLastHeard > 3200) {
 			activeSpeakerCandidate = null;
-			setActiveSpeaker(null);
+			setActiveSpeaker(chooseFallbackSpeaker());
 		}
 	} else if (activeSpeakerId && participants.size <= 1) {
 		setActiveSpeaker(null);
@@ -333,18 +368,32 @@ async function createPeer(id, name, initiator) {
 	if (!localStream) return null;
 	await ensureLocalAudioTrack();
 	const connection = new RTCPeerConnection({ iceServers });
-	const videoTrack = screenStream?.getVideoTracks()[0] || localStream.getVideoTracks()[0];
+	const videoTrack = localStream.getVideoTracks()[0];
 	const outgoingStream = new MediaStream([...localStream.getAudioTracks(), ...(videoTrack ? [videoTrack] : [])]);
 	outgoingStream.getTracks().forEach((track) => connection.addTrack(track, outgoingStream));
+	const screenVideoTransceiver = connection.addTransceiver('video', { direction: 'sendrecv' });
 	const screenAudioTransceiver = connection.addTransceiver('audio', { direction: 'sendrecv' });
-	const screenAudioTrack = screenStream?.getAudioTracks()[0];
-	if (screenAudioTrack) await screenAudioTransceiver.sender.replaceTrack(screenAudioTrack);
 	const remoteStream = new MediaStream();
-	peers.set(id, { connection, name, screenAudioSender: screenAudioTransceiver.sender, remoteStream });
+	const remoteScreenStream = new MediaStream();
+	peers.set(id, { connection, name, screenVideoSender: screenVideoTransceiver.sender, screenAudioSender: screenAudioTransceiver.sender, remoteStream, remoteScreenStream });
+	if (screenStream) {
+		const sharedVideo = screenStream.getVideoTracks()[0];
+		const sharedAudio = screenStream.getAudioTracks()[0];
+		if (sharedVideo) await screenVideoTransceiver.sender.replaceTrack(sharedVideo);
+		if (sharedAudio) await screenAudioTransceiver.sender.replaceTrack(sharedAudio);
+	}
 	connection.onicecandidate = ({ candidate }) => candidate && socket.emit('signal', { target: id, signal: { candidate } });
-	connection.ontrack = ({ track }) => {
-		if (!remoteStream.getTracks().some((receivedTrack) => receivedTrack.id === track.id)) remoteStream.addTrack(track);
-		addVideo(id, name, remoteStream);
+	connection.ontrack = ({ track, transceiver }) => {
+		const isScreenTrack = transceiver === screenVideoTransceiver || transceiver === screenAudioTransceiver;
+		const stream = isScreenTrack ? remoteScreenStream : remoteStream;
+		if (!stream.getTracks().some((receivedTrack) => receivedTrack.id === track.id)) stream.addTrack(track);
+		const tileId = isScreenTrack ? `presentation-${id}` : id;
+		const tileName = isScreenTrack ? `${name}'s screen` : name;
+		addVideo(tileId, tileName, stream);
+		if (isScreenTrack) {
+			pinnedParticipantId = tileId;
+			setActiveSpeaker(tileId);
+		}
 	};
 	connection.onconnectionstatechange = () => {
 		if (connection.connectionState === 'failed') {
@@ -381,7 +430,10 @@ function removePeer(id) {
 	peers.delete(id);
 	audioAnalyzers.delete(id);
 	document.getElementById(`tile-${id}`)?.remove();
-	if (activeSpeakerId === id) setActiveSpeaker(null);
+	const presentationId = `presentation-${id}`;
+	document.getElementById(`tile-${presentationId}`)?.remove();
+	if (pinnedParticipantId === id || pinnedParticipantId === presentationId) pinnedParticipantId = null;
+	if (activeSpeakerId === id || activeSpeakerId === presentationId) setActiveSpeaker(chooseFallbackSpeaker(id));
 	updateCount();
 }
 
@@ -529,6 +581,13 @@ socket.on('signal', async ({ sender, signal }) => {
 			socket.emit('signal', { target: sender, signal: { description: connection.localDescription } });
 		}
 	} else if (signal.candidate) await connection.addIceCandidate(signal.candidate).catch(() => {});
+});
+socket.on('presentation-stopped', ({ id }) => {
+	const presentationId = `presentation-${id}`;
+	document.getElementById(`tile-${presentationId}`)?.remove();
+	if (pinnedParticipantId === presentationId) pinnedParticipantId = null;
+	if (activeSpeakerId === presentationId) setActiveSpeaker(chooseFallbackSpeaker(presentationId));
+	updateCount();
 });
 socket.on('user-left', (id) => { participants.delete(id); renderParticipants(); removePeer(id); });
 socket.on('join-error', (message) => { $('join-error').textContent = message; });
@@ -721,8 +780,8 @@ $('switch-camera-button').addEventListener('click', async () => {
 	try {
 		const replacementStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: nextFacingMode } }, audio: false });
 		const replacementTrack = replacementStream.getVideoTracks()[0];
-		for (const { connection } of peers.values()) {
-			const sender = connection.getSenders().find((item) => item.track?.kind === 'video');
+		for (const { connection, screenVideoSender } of peers.values()) {
+			const sender = connection.getSenders().find((item) => item.track?.kind === 'video' && item !== screenVideoSender);
 			if (sender) await sender.replaceTrack(replacementTrack);
 		}
 		const oldTrack = localStream.getVideoTracks()[0];
@@ -754,24 +813,26 @@ $('share-button').addEventListener('click', async () => {
 	try {
 		screenStream = await getDisplayMedia({ video: true, audio: true });
 		setActiveSpeaker(null);
-		videoGrid.classList.add('presentation-mode');
 		const track = screenStream.getVideoTracks()[0];
 		if (!track) throw new Error('The browser returned no screen video track.');
 		const sharedAudioTrack = screenStream.getAudioTracks()[0];
-		for (const { connection } of peers.values()) {
-			const sender = connection.getSenders().find((item) => item.track?.kind === 'video');
-			if (sender) await sender.replaceTrack(track);
+		for (const { screenVideoSender, screenAudioSender } of peers.values()) {
+			await screenVideoSender?.replaceTrack(track);
+			await screenAudioSender?.replaceTrack(sharedAudioTrack || null);
 		}
 		if (sharedAudioTrack) {
-			for (const { screenAudioSender } of peers.values()) await screenAudioSender?.replaceTrack(sharedAudioTrack);
 			showMeetingToast('Screen and shared-tab audio are being presented.');
 		} else {
 			showMeetingToast('Screen shared. Select a browser tab and enable Share tab audio to send sound.');
 		}
-		addVideo(localTileId, displayName, screenStream, true);
+		const presentationId = `presentation-${socket.id}`;
+		addVideo(presentationId, `${displayName} screen`, screenStream, true);
+		pinnedParticipantId = presentationId;
+		setActiveSpeaker(presentationId);
 		track.onended = stopSharing;
 		$('share-button').classList.add('active');
 		document.querySelector('#share-button small').textContent = 'Stop sharing';
+		socket.emit('presentation-start');
 	} catch (error) {
 		if (error.name === 'AbortError' || error.name === 'NotAllowedError') return;
 		const message = error.name === 'NotReadableError'
@@ -785,16 +846,18 @@ $('share-button').addEventListener('click', async () => {
 });
 function stopSharing() {
 	const track = localStream?.getVideoTracks()[0];
-	for (const { connection, screenAudioSender } of peers.values()) {
-		const sender = connection.getSenders().find((item) => item.track?.kind === 'video');
-		if (sender && track) sender.replaceTrack(track);
+	for (const { screenVideoSender, screenAudioSender } of peers.values()) {
+		if (screenVideoSender && track) screenVideoSender.replaceTrack(track);
 		screenAudioSender?.replaceTrack(null).catch(() => {});
 	}
 	screenStream?.getTracks().forEach((item) => item.stop());
 	screenStream = null;
-	setActiveSpeaker(null);
+	socket.emit('presentation-stop');
+	document.getElementById(`tile-presentation-${socket.id}`)?.remove();
+	pinnedParticipantId = null;
 	videoGrid.classList.remove('presentation-mode');
 	addVideo(localTileId, displayName, localStream, true);
+	setActiveSpeaker(chooseFallbackSpeaker());
 	$('share-button').classList.remove('active');
 	document.querySelector('#share-button small').textContent = 'Share screen';
 	showMeetingToast('Screen sharing stopped.');
@@ -1007,6 +1070,22 @@ $('video-effect-select').addEventListener('change', (event) => {
 });
 
 let captionRecognition;
+let localCaptionText = '';
+const remoteCaptionTranscripts = new Map();
+
+function renderCaptionDisplay() {
+	const lines = [...remoteCaptionTranscripts.values()];
+	if (localCaptionText) lines.push(`You: ${localCaptionText}`);
+	$('caption-display').textContent = lines.join('\n');
+	$('caption-display').classList.toggle('hidden', lines.length === 0);
+}
+
+socket.on('caption', ({ id, name, text, active }) => {
+	if (id === socket.id) return;
+	if (active && text) remoteCaptionTranscripts.set(id, `${name}: ${text}`);
+	else remoteCaptionTranscripts.delete(id);
+	renderCaptionDisplay();
+});
 
 $('email-invite-button').addEventListener('click', () => {
 	const email = $('invite-email').value.trim();
@@ -1028,8 +1107,9 @@ $('settings-captions-toggle').addEventListener('change', (event) => {
 	const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 	const captionDisplay = $('caption-display');
 	if (!event.target.checked) {
-		captionDisplay.classList.add('hidden');
-		captionDisplay.textContent = '';
+		localCaptionText = '';
+		renderCaptionDisplay();
+		socket.emit('caption', { active: false, text: '' });
 		captionRecognition?.stop();
 		return;
 	}
@@ -1038,12 +1118,13 @@ $('settings-captions-toggle').addEventListener('change', (event) => {
 		captionDisplay.classList.remove('hidden');
 		return;
 	}
-	captionDisplay.classList.remove('hidden');
 	captionRecognition = new Recognition();
 	captionRecognition.continuous = true;
 	captionRecognition.interimResults = true;
 	captionRecognition.onresult = (resultEvent) => {
-		captionDisplay.textContent = [...resultEvent.results].map((result) => result[0].transcript).join(' ');
+		localCaptionText = [...resultEvent.results].map((result) => result[0].transcript).join(' ');
+		renderCaptionDisplay();
+		socket.emit('caption', { active: true, text: localCaptionText });
 	};
 	captionRecognition.onend = () => { if ($('settings-captions-toggle').checked) captionRecognition.start(); };
 	captionRecognition.start();

@@ -195,6 +195,16 @@ io.on('connection', (socket) => {
 		if (target && signal) io.to(target).emit('signal', { sender: socket.id, signal });
 	});
 
+	socket.on('presentation-start', () => {
+		const room = rooms.get(socket.data.roomId);
+		if (room?.has(socket.id)) io.to(socket.data.roomId).emit('presentation-started', { id: socket.id, name: socket.data.name || 'A participant' });
+	});
+
+	socket.on('presentation-stop', () => {
+		const room = rooms.get(socket.data.roomId);
+		if (room?.has(socket.id)) io.to(socket.data.roomId).emit('presentation-stopped', { id: socket.id });
+	});
+
 	socket.on('chat-message', (text) => {
 		const roomId = socket.data.roomId;
 		if (!roomId || typeof text !== 'string') return;
@@ -202,6 +212,18 @@ io.on('connection', (socket) => {
 		const message = text.trim().slice(0, 1000);
 		if (!message) return;
 		io.to(roomId).emit('chat-message', { id: socket.id, name: socket.data.name || 'Guest', text: message, timestamp: Date.now() });
+	});
+
+	socket.on('caption', ({ text, active } = {}) => {
+		const roomId = socket.data.roomId;
+		const participant = rooms.get(roomId)?.get(socket.id);
+		if (!participant || typeof text !== 'string') return;
+		socket.to(roomId).emit('caption', {
+			id: socket.id,
+			name: participant.name || 'Guest',
+			text: text.slice(0, 500),
+			active: Boolean(active),
+		});
 	});
 
 	socket.on('report-problem', (text) => {
