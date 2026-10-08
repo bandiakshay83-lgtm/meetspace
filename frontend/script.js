@@ -31,6 +31,11 @@ let activeSpeakerLastSwitch = 0;
 let hideVideoTiles = false;
 let showOtherReactions = true;
 let animateReactions = true;
+let meetingStartedAt = null;
+let meetingDurationTimer = null;
+let captionRecognition;
+let captionRestartTimer = null;
+let captionsEnabled = false;
 
 const $ = (id) => document.getElementById(id);
 const joinScreen = $('join-screen');
@@ -40,6 +45,22 @@ const videoGrid = $('video-grid');
 const speakerLayout = $('speaker-layout');
 const speakerStage = $('speaker-stage');
 const participantRail = $('participant-rail');
+const selfPreviewLayer = $('self-preview-layer');
+
+function updateMeetingDuration() {
+	if (!meetingStartedAt) return;
+	const elapsedSeconds = Math.floor((Date.now() - meetingStartedAt) / 1000);
+	const minutes = String(Math.floor(elapsedSeconds / 60)).padStart(2, '0');
+	const seconds = String(elapsedSeconds % 60).padStart(2, '0');
+	$('meeting-duration').textContent = `${minutes}:${seconds}`;
+}
+
+function startMeetingDuration() {
+	if (meetingDurationTimer) return;
+	meetingStartedAt = Date.now();
+	updateMeetingDuration();
+	meetingDurationTimer = window.setInterval(updateMeetingDuration, 1000);
+}
 
 function addVideo(id, name, stream, local = false) {
 	let tile = document.getElementById(`tile-${id}`);
@@ -47,11 +68,15 @@ function addVideo(id, name, stream, local = false) {
 		tile = document.createElement('article');
 		tile.className = `video-tile${local ? ' local-tile' : ''}`;
 		tile.id = `tile-${id}`;
-		tile.innerHTML = `<video autoplay playsinline></video><div class="video-overlay"><div class="avatar-overlay"><span class="avatar-letter"></span><span class="avatar-name"></span></div><div class="mute-badge">🔇</div></div><span class="hand-indicator" aria-label="Hand raised">&#9995;</span><div class="tile-footer"><span class="avatar">${name.charAt(0).toUpperCase()}</span><span class="tile-name"></span></div>`;
+		tile.setAttribute('role', 'button');
+		tile.tabIndex = 0;
+		tile.innerHTML = `<video autoplay playsinline></video><div class="video-overlay"><div class="avatar-overlay"><span class="avatar-letter"></span><span class="avatar-name"></span></div><div class="mute-badge">🔇</div></div><span class="hand-indicator" aria-label="Hand raised">&#9995;</span><div class="tile-footer"><span class="avatar">${name.charAt(0).toUpperCase()}</span><span class="tile-name"></span><span class="role-badge"></span></div>`;
 		tile.querySelector('.avatar-letter').textContent = name.charAt(0).toUpperCase();
 		tile.querySelector('.avatar-name').textContent = local ? `${name} (You)` : name;
 		tile.querySelector('.tile-name').textContent = local ? `${name} (You)` : name;
-		tile.addEventListener('click', () => {
+		tile.setAttribute('aria-label', `Make ${local ? 'your' : name + "'s"} video the main view`);
+		const activateTile = () => {
+			if (tile.classList.contains('local-tile') && !tile.classList.contains('presentation-tile')) return;
 			if (pinnedParticipantId === id) {
 				pinnedParticipantId = null;
 				setActiveSpeaker(chooseFallbackSpeaker(id));
@@ -59,6 +84,13 @@ function addVideo(id, name, stream, local = false) {
 				pinnedParticipantId = id;
 				activeSpeakerCandidate = null;
 				setActiveSpeaker(id);
+			}
+		};
+		tile.addEventListener('click', activateTile);
+		tile.addEventListener('keydown', (event) => {
+			if (event.key === 'Enter' || event.key === ' ') {
+				event.preventDefault();
+				activateTile();
 			}
 		});
 		videoGrid.appendChild(tile);
@@ -70,12 +102,19 @@ function addVideo(id, name, stream, local = false) {
 	video.setAttribute('playsinline', '');
 	video.setAttribute('autoplay', '');
 	video.srcObject = stream;
-	tile.classList.toggle('presentation-tile', Boolean(local && screenStream));
+	tile.classList.toggle('presentation-tile', id.startsWith('presentation-'));
 	applyAudioOutputPreference(video);
 	const playPreview = () => video.play().catch(() => {
 		if (!local) showMeetingError('Click anywhere in the meeting to enable participant audio.');
 	});
-	video.onloadedmetadata = playPreview;
+	const refreshTileVideo = () => {
+		updateBadges(id);
+		tile.classList.toggle('video-ready', video.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
+	};
+	video.onloadedmetadata = () => { playPreview(); refreshTileVideo(); };
+	video.onloadeddata = refreshTileVideo;
+	video.onplaying = refreshTileVideo;
+	video.onresize = refreshTileVideo;
 	playPreview();
 	updateBadges(id);
 	setupAudioAnalyser(id, video, stream, local);
@@ -103,19 +142,41 @@ function setupAudioAnalyser(id, video, stream, local) {
 }
 
 function chooseFallbackSpeaker(excludedId = null) {
-	const candidates = [...videoGrid.querySelectorAll('.video-tile')].filter((tile) => tile.id !== `tile-${excludedId}`);
-	const hostTile = candidates.find((tile) => participants.get(tile.id.slice(5))?.isHost);
-	const remoteTile = candidates.find((tile) => !tile.classList.contains('local-tile'));
-	return (hostTile || remoteTile || candidates[0])?.id.slice(5) || null;
+	const candidates = [...videoGrid.querySelectorAll('.video-tile')].filter((tile) => tile.id !== `tile-${excludedId}` && !(tile.classList.contains('local-tile') && !tile.classList.contains('presentation-tile')));
+	const remoteHost = candidates.find((tile) => participants.get(tile.id.slice(5))?.isHost);
+	const remoteCamera = candidates.find((tile) => !tile.classList.contains('presentation-tile'));
+	return (remoteHost || remoteCamera || candidates[0])?.id.slice(5) || null;
 }
 
 function setActiveSpeaker(id) {
 	const tiles = [...videoGrid.querySelectorAll('.video-tile')];
-	if (id && !tiles.some((tile) => tile.id === `tile-${id}`)) id = chooseFallbackSpeaker();
+	const loneSelfTile = tiles.length === 1 && tiles[0].classList.contains('local-tile') && !tiles[0].classList.contains('presentation-tile') ? tiles[0] : null;
+	if (id) {
+		const selectedTile = tiles.find((tile) => tile.id === `tile-${id}`);
+		if (!selectedTile || (selectedTile.classList.contains('local-tile') && !selectedTile.classList.contains('presentation-tile'))) {
+			id = chooseFallbackSpeaker(id);
+		}
+	}
+	const destinationForTile = (tile) => tile.id === `tile-${id}`
+		? speakerStage
+		: tile.classList.contains('local-tile') && !tile.classList.contains('presentation-tile')
+			? selfPreviewLayer
+			: participantRail;
 	const layoutIsCurrent = id
-		? tiles.every((tile) => tile.parentElement === (tile.id === `tile-${id}` ? speakerStage : participantRail))
-		: tiles.every((tile) => tile.parentElement === videoGrid);
+		? tiles.every((tile) => tile.parentElement === destinationForTile(tile))
+		: loneSelfTile
+			? loneSelfTile.parentElement === selfPreviewLayer
+			: tiles.every((tile) => tile.parentElement === videoGrid);
 	if (activeSpeakerId === id && layoutIsCurrent) return;
+	if (!id && loneSelfTile) {
+		activeSpeakerId = null;
+		videoGrid.classList.add('active-speaker-mode');
+		loneSelfTile.classList.remove('main-speaker', 'active-speaker');
+		loneSelfTile.classList.add('speaker-thumbnail', 'self-preview');
+		selfPreviewLayer.appendChild(loneSelfTile);
+		speakerLayout.classList.remove('hidden');
+		return;
+	}
 	if (tiles.length < 2 || !id) {
 		activeSpeakerId = null;
 		videoGrid.classList.remove('active-speaker-mode');
@@ -137,7 +198,7 @@ function setActiveSpeaker(id) {
 		tile.classList.toggle('speaker-thumbnail', !isMainSpeaker);
 		tile.classList.remove('self-preview');
 		tile.classList.toggle('active-speaker', isMainSpeaker);
-		(isMainSpeaker ? speakerStage : participantRail).appendChild(tile);
+		destinationForTile(tile).appendChild(tile);
 	});
 	speakerLayout.classList.remove('hidden');
 }
@@ -153,6 +214,7 @@ function updateActiveSpeaker() {
 		let loudestId = null;
 		let loudestLevel = 0;
 		for (const [id, entry] of audioAnalyzers) {
+			if (id === socket.id || id.startsWith('presentation-')) continue;
 			if (!document.getElementById(`tile-${id}`)) continue;
 			entry.analyser.getByteTimeDomainData(entry.data);
 			let sum = 0;
@@ -210,17 +272,19 @@ function updateBadges(id) {
 	const avatarOverlay = tile.querySelector('.avatar-overlay');
 	const muteBadge = tile.querySelector('.mute-badge');
 	if (!avatarOverlay || !muteBadge) return;
+	const video = tile.querySelector('video');
+	const hasLiveVideo = video.srcObject?.getVideoTracks().some((track) => track.readyState === 'live' && !track.muted);
+	const hasVideoFrame = video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0;
+	const videoUnavailable = Boolean(participant?.mediaState?.videoMuted) || !hasLiveVideo || !hasVideoFrame;
+	video.classList.toggle('video-unavailable', videoUnavailable);
+	tile.classList.toggle('video-ready', !videoUnavailable);
+	avatarOverlay.classList.toggle('visible', videoUnavailable);
+	avatarOverlay.querySelector('.avatar-name').textContent = `${participant?.name || tile.querySelector('.tile-name').textContent.replace(' (You)', '')}${videoUnavailable ? ' · Camera off' : ''}`;
+	const roleBadge = tile.querySelector('.role-badge');
+	const role = participant?.isHost ? 'Host' : participant?.role === 'presenter' ? 'Presenter' : '';
+	roleBadge.textContent = role;
+	roleBadge.classList.toggle('visible', Boolean(role));
 	
-	// Show avatar overlay if video is muted
-	if (participant?.mediaState?.videoMuted) {
-		tile.querySelector('video').style.display = 'none';
-		avatarOverlay.classList.add('visible');
-	} else {
-		tile.querySelector('video').style.display = 'block';
-		avatarOverlay.classList.remove('visible');
-	}
-	
-	// Show mute badge if audio is muted
 	if (participant?.mediaState?.audioMuted) {
 		muteBadge.classList.add('visible');
 	} else {
@@ -239,7 +303,7 @@ function publishMediaState() {
 }
 
 function updateCount() {
-	$('participant-count').textContent = videoGrid.querySelectorAll('.video-tile').length;
+	$('participant-count').textContent = participants.size || videoGrid.querySelectorAll('.video-tile').length;
 	if (activeSpeakerId) setActiveSpeaker(activeSpeakerId);
 }
 
@@ -311,6 +375,8 @@ function renderParticipants() {
 		}
 		list.appendChild(row);
 	}
+	for (const id of participants.keys()) updateBadges(id);
+	updateCount();
 }
 
 function renderWaitingQueue(queue) {
@@ -384,7 +450,10 @@ async function createPeer(id, name, initiator) {
 	}
 	connection.onicecandidate = ({ candidate }) => candidate && socket.emit('signal', { target: id, signal: { candidate } });
 	connection.ontrack = ({ track, transceiver }) => {
-		const isScreenTrack = transceiver === screenVideoTransceiver || transceiver === screenAudioTransceiver;
+		const transceiverMid = transceiver?.mid;
+		const isScreenTrack = transceiver === screenVideoTransceiver
+			|| transceiver === screenAudioTransceiver
+			|| Boolean(transceiverMid && [screenVideoTransceiver.mid, screenAudioTransceiver.mid].includes(transceiverMid));
 		const stream = isScreenTrack ? remoteScreenStream : remoteStream;
 		if (!stream.getTracks().some((receivedTrack) => receivedTrack.id === track.id)) stream.addTrack(track);
 		const tileId = isScreenTrack ? `presentation-${id}` : id;
@@ -535,6 +604,7 @@ async function startMeeting(event) {
 		localTileId = socket.id || 'local';
 		participants.set(socket.id, { name: displayName, isHost: false, role: 'participant', mediaState: { audioMuted: false, videoMuted: false } });
 		addVideo(localTileId, displayName, localStream, true);
+		setActiveSpeaker(null);
 		$('room-title').textContent = currentRoom;
 		$('copy-link-button').title = meetingLink();
 		joinScreen.classList.add('hidden');
@@ -548,6 +618,11 @@ async function startMeeting(event) {
 			} else if (state === 'approved' && host) {
 				waitingScreen.classList.add('hidden');
 				meetingScreen.classList.remove('hidden');
+				startMeetingDuration();
+			} else if (state === 'approved') {
+				waitingScreen.classList.add('hidden');
+				meetingScreen.classList.remove('hidden');
+				startMeetingDuration();
 			}
 		});
 	} catch (error) {
@@ -599,6 +674,7 @@ socket.on('join-error', (message) => { $('join-error').textContent = message; })
 socket.on('approval-granted', () => {
 	waitingScreen.classList.add('hidden');
 	meetingScreen.classList.remove('hidden');
+	startMeetingDuration();
 });
 socket.on('approval-rejected', () => {
 	waitingScreen.classList.add('hidden');
@@ -626,6 +702,7 @@ socket.on('host-status', (host) => {
 	if (host) {
 		waitingScreen.classList.add('hidden');
 		meetingScreen.classList.remove('hidden');
+		startMeetingDuration();
 	}
 	renderParticipants();
 });
@@ -1069,7 +1146,6 @@ $('video-effect-select').addEventListener('change', (event) => {
 		if (effect !== 'none') localVideo.classList.add(`effect-${effect}`);
 });
 
-let captionRecognition;
 let localCaptionText = '';
 const remoteCaptionTranscripts = new Map();
 
@@ -1082,10 +1158,59 @@ function renderCaptionDisplay() {
 
 socket.on('caption', ({ id, name, text, active }) => {
 	if (id === socket.id) return;
-	if (active && text) remoteCaptionTranscripts.set(id, `${name}: ${text}`);
+	if (active && text) remoteCaptionTranscripts.set(id, `${name || 'Participant'}: ${text}`);
 	else remoteCaptionTranscripts.delete(id);
 	renderCaptionDisplay();
 });
+
+function stopLiveCaptions() {
+	captionsEnabled = false;
+	window.clearTimeout(captionRestartTimer);
+	captionRestartTimer = null;
+	const recognition = captionRecognition;
+	captionRecognition = null;
+	localCaptionText = '';
+	renderCaptionDisplay();
+	if (socket.connected) socket.emit('caption', { active: false, text: '' });
+	try { recognition?.stop(); } catch { /* Recognition may already have ended. */ }
+}
+
+function startCaptionRecognition(Recognition) {
+	if (!captionsEnabled || captionRecognition) return;
+	const recognition = new Recognition();
+	captionRecognition = recognition;
+	recognition.continuous = true;
+	recognition.interimResults = true;
+	recognition.lang = navigator.language || 'en-IN';
+	recognition.onresult = (resultEvent) => {
+		localCaptionText = [...resultEvent.results].map((result) => result[0].transcript).join(' ').trim();
+		renderCaptionDisplay();
+		if (localCaptionText && socket.connected) socket.emit('caption', { active: true, text: localCaptionText });
+	};
+	recognition.onerror = (event) => {
+		if (!['not-allowed', 'service-not-allowed', 'audio-capture'].includes(event.error)) return;
+		captionsEnabled = false;
+		$('settings-captions-toggle').checked = false;
+		window.clearTimeout(captionRestartTimer);
+		captionRestartTimer = null;
+		captionRecognition = null;
+		localCaptionText = '';
+		renderCaptionDisplay();
+		if (socket.connected) socket.emit('caption', { active: false, text: '' });
+		showMeetingToast(event.error === 'audio-capture' ? 'Captions cannot access your microphone.' : 'Allow speech recognition in your browser to use captions.', 'error');
+	};
+	recognition.onend = () => {
+		if (captionRecognition !== recognition) return;
+		captionRecognition = null;
+		if (captionsEnabled) captionRestartTimer = window.setTimeout(() => startCaptionRecognition(Recognition), 250);
+	};
+	try {
+		recognition.start();
+	} catch (error) {
+		captionRecognition = null;
+		throw error;
+	}
+}
 
 $('email-invite-button').addEventListener('click', () => {
 	const email = $('invite-email').value.trim();
@@ -1105,29 +1230,23 @@ $('close-settings').addEventListener('click', () => {
 });
 $('settings-captions-toggle').addEventListener('change', (event) => {
 	const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-	const captionDisplay = $('caption-display');
 	if (!event.target.checked) {
-		localCaptionText = '';
-		renderCaptionDisplay();
-		socket.emit('caption', { active: false, text: '' });
-		captionRecognition?.stop();
+		stopLiveCaptions();
 		return;
 	}
 	if (!Recognition) {
-		captionDisplay.textContent = 'Live captions are unavailable in this browser.';
-		captionDisplay.classList.remove('hidden');
+		event.target.checked = false;
+		showMeetingToast('Live captions are unavailable in this browser. Try Chrome or Edge.', 'error');
 		return;
 	}
-	captionRecognition = new Recognition();
-	captionRecognition.continuous = true;
-	captionRecognition.interimResults = true;
-	captionRecognition.onresult = (resultEvent) => {
-		localCaptionText = [...resultEvent.results].map((result) => result[0].transcript).join(' ');
-		renderCaptionDisplay();
-		socket.emit('caption', { active: true, text: localCaptionText });
-	};
-	captionRecognition.onend = () => { if ($('settings-captions-toggle').checked) captionRecognition.start(); };
-	captionRecognition.start();
+	captionsEnabled = true;
+	try {
+		startCaptionRecognition(Recognition);
+	} catch {
+		captionsEnabled = false;
+		event.target.checked = false;
+		showMeetingToast('Could not start live captions. Check microphone and browser permissions.', 'error');
+	}
 });
 $('hide-video-tiles-toggle').addEventListener('change', (event) => {
 	hideVideoTiles = event.target.checked;

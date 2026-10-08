@@ -31,7 +31,7 @@
 			<div class="join-divider"><span>or get started</span></div>
 			<div class="entry-actions">
 				<button id="new-meeting-button" class="secondary-button" type="button"><span aria-hidden="true">&#43;</span> New meeting</button>
-				<button id="get-link-button" class="secondary-button" type="button"><span aria-hidden="true">&#128279;</span> Get a link</button>
+				<button id="get-link-button" class="secondary-button" type="button" title="Create and copy a meeting invite link"><span aria-hidden="true">&#128279;</span> Share meeting link</button>
 			</div>
 			<button id="schedule-button" class="schedule-link" type="button">Schedule a meeting <span aria-hidden="true">&#8594;</span></button>
 			<div id="invite-box" class="invite-box hidden"><label for="invite-link">Your meeting link</label><div class="invite-row"><input id="invite-link" readonly><button id="copy-invite-button" type="button">Copy</button></div><p>Share this link with your participants.</p></div>
@@ -46,7 +46,7 @@
 	<main id="meeting-screen" class="meeting-screen hidden">
 		<header class="topbar">
 			<div class="wordmark"><span>G</span> gather</div>
-			<div class="room-label"><span class="live-dot"></span><span id="room-title"></span><button id="copy-link-button" class="copy-link" type="button">Copy invite link</button></div>
+			<div class="room-label"><span class="live-dot"></span><span id="room-title"></span><span id="meeting-duration" class="meeting-duration" aria-label="Meeting duration">00:00</span><button id="copy-link-button" class="copy-link" type="button">Copy invite link</button></div>
 			<div class="status-row">
 				<div id="audio-device-status" class="audio-device-status hidden">
 					<span id="audio-device-icon">🎧</span>
@@ -63,6 +63,7 @@
 			<div id="video-grid" class="video-grid">
 				<div id="speaker-layout" class="speaker-layout hidden">
 					<div id="speaker-stage" class="speaker-stage"></div>
+					<div id="self-preview-layer" class="self-preview-layer" aria-label="Your video"></div>
 					<div id="participant-rail" class="participant-rail" aria-label="Other participants"></div>
 				</div>
 			</div>
