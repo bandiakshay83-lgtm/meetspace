@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const express = require('express');
 const { Server } = require('socket.io');
@@ -9,7 +10,15 @@ const io = new Server(server, {
 	cors: { origin: true, credentials: true }
 });
 
-const frontendPath = path.join(__dirname, 'frontend');
+const frontendCandidates = [
+	path.join(__dirname, 'frontend'),
+	path.join(process.cwd(), 'frontend'),
+	path.resolve(__dirname, '..', 'frontend'),
+	path.resolve(process.cwd(), '..', 'frontend'),
+	__dirname
+];
+const frontendPath = frontendCandidates.find((candidate) => fs.existsSync(path.join(candidate, 'index.html')));
+if (!frontendPath) throw new Error('Could not locate the frontend index.html. Set the Render root directory to the repository root.');
 app.use(express.static(frontendPath));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 app.get('/api/ice-servers', (req, res) => {
@@ -23,6 +32,7 @@ app.get('/api/ice-servers', (req, res) => {
 	}
 	res.json({ iceServers });
 });
+app.get('/', (req, res) => res.sendFile(path.join(frontendPath, 'index.html')));
 app.use((req, res, next) => {
 	if (req.method === 'GET' && !path.extname(req.path)) {
 		return res.sendFile(path.join(frontendPath, 'index.html'));
