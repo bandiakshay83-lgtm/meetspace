@@ -268,6 +268,7 @@ body { background: var(--paper); }
 .meeting-screen .topbar { min-height: 62px; padding: 10px 22px; background: #171d1b; border-bottom-color: rgba(255, 255, 255, .08); }
 .meeting-screen .wordmark { color: #f2f5f3; }
 .meeting-screen .room-label, .meeting-screen .participant-count { color: #aeb9b3; }
+.meeting-screen .audio-device-status { display: none !important; }
 .meeting-screen .meeting-body { background: #101413; }
 .meeting-actions { display: flex; align-items: center; gap: 6px; }
 .header-action { position: relative; display: grid; width: 58px; min-height: 44px; place-items: center; gap: 1px; border-radius: 6px; background: transparent; color: #47564f; }
@@ -388,6 +389,7 @@ body { background: var(--paper); }
 .video-grid.active-speaker-mode .participant-rail .video-tile video { object-fit: cover; object-position: center 30%; }
 .video-tile video.video-unavailable { opacity: 0; }
 .video-tile.presentation-tile video { object-fit: contain; background: #0b100e; }
+.meeting-screen .audio-device-status { display: none !important; }
 .avatar-overlay { background: radial-gradient(circle at 50% 42%, #34443a, #202a25 72%); }
 .tile-footer { display: flex; align-items: center; gap: 7px; }
 .role-badge { display: none; padding: 3px 6px; border: 1px solid rgba(220, 241, 202, .22); border-radius: 4px; background: rgba(24, 39, 31, .8); color: #d8f3c2; font-size: 9px; font-weight: 700; }

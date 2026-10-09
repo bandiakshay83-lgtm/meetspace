@@ -79,7 +79,6 @@ function addVideo(id, name, stream, local = false) {
 		tile.querySelector('.hand-indicator').classList.toggle('visible', Boolean(participants.get(id)?.handRaised));
 		tile.setAttribute('aria-label', `Make ${local ? 'your' : name + "'s"} video the main view`);
 		const activateTile = () => {
-			if (tile.classList.contains('local-tile') && !tile.classList.contains('presentation-tile')) return;
 			if (pinnedParticipantId === id) return;
 			pinnedParticipantId = id;
 			$('auto-speaker-button').classList.remove('active');
@@ -127,12 +126,12 @@ function setupAudioAnalyser(id, video, stream, local) {
 	try {
 		audioContext ||= new (window.AudioContext || window.webkitAudioContext)();
 		if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-		const source = local ? audioContext.createMediaStreamSource(stream) : audioContext.createMediaElementSource(video);
+		const audioStream = new MediaStream(stream.getAudioTracks());
+		const source = audioContext.createMediaStreamSource(audioStream);
 		const analyser = audioContext.createAnalyser();
 		analyser.fftSize = 512;
 		source.connect(analyser);
-		if (!local) analyser.connect(audioContext.destination);
-		audioAnalyzers.set(id, { analyser, data: new Uint8Array(analyser.fftSize) });
+		audioAnalyzers.set(id, { analyser, source, stream: audioStream, data: new Uint8Array(analyser.fftSize) });
 		if (!window.activeSpeakerLoopStarted) {
 			window.activeSpeakerLoopStarted = true;
 			requestAnimationFrame(updateActiveSpeaker);
@@ -161,9 +160,7 @@ function setActiveSpeaker(id) {
 	const loneSelfTile = tiles.length === 1 && tiles[0].classList.contains('local-tile') && !tiles[0].classList.contains('presentation-tile') ? tiles[0] : null;
 	if (id) {
 		const selectedTile = tiles.find((tile) => tile.id === `tile-${id}`);
-		if (!selectedTile || (selectedTile.classList.contains('local-tile') && !selectedTile.classList.contains('presentation-tile'))) {
-			id = chooseFallbackSpeaker(id);
-		}
+		if (!selectedTile) id = chooseFallbackSpeaker(id);
 	}
 	const destinationForTile = (tile) => tile.id === `tile-${id}`
 		? speakerStage
@@ -227,7 +224,7 @@ function updateActiveSpeaker() {
 			let loudestId = null;
 			let loudestLevel = 0;
 			for (const [id, entry] of audioAnalyzers) {
-				if (id === socket.id || id.startsWith('presentation-')) continue;
+				if (id.startsWith('presentation-')) continue;
 				if (!document.getElementById(`tile-${id}`)) continue;
 				entry.analyser.getByteTimeDomainData(entry.data);
 				let sum = 0;
