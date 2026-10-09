@@ -80,18 +80,12 @@ function addVideo(id, name, stream, local = false) {
 		tile.setAttribute('aria-label', `Make ${local ? 'your' : name + "'s"} video the main view`);
 		const activateTile = () => {
 			if (tile.classList.contains('local-tile') && !tile.classList.contains('presentation-tile')) return;
-			if (pinnedParticipantId === id) {
-				pinnedParticipantId = null;
-				$('auto-speaker-button').classList.add('active');
-				$('auto-speaker-button').setAttribute('aria-pressed', 'true');
-				setActiveSpeaker(chooseFallbackSpeaker(id));
-			} else {
-				pinnedParticipantId = id;
-				$('auto-speaker-button').classList.remove('active');
-				$('auto-speaker-button').setAttribute('aria-pressed', 'false');
-				activeSpeakerCandidate = null;
-				setActiveSpeaker(id);
-			}
+			if (pinnedParticipantId === id) return;
+			pinnedParticipantId = id;
+			$('auto-speaker-button').classList.remove('active');
+			$('auto-speaker-button').setAttribute('aria-pressed', 'false');
+			activeSpeakerCandidate = null;
+			setActiveSpeaker(id);
 		};
 		tile.addEventListener('click', activateTile);
 		tile.addEventListener('keydown', (event) => {
@@ -147,6 +141,13 @@ function setupAudioAnalyser(id, video, stream, local) {
 		showMeetingToast('Active speaker detection is unavailable in this browser.', 'error');
 	}
 }
+
+function resumeMeetingAudio() {
+	if (audioContext && audioContext.state !== 'running') audioContext.resume().catch(() => {});
+}
+
+document.addEventListener('pointerdown', resumeMeetingAudio, { capture: true });
+document.addEventListener('keydown', resumeMeetingAudio, { capture: true });
 
 function chooseFallbackSpeaker(excludedId = null) {
 	const candidates = [...videoGrid.querySelectorAll('.video-tile')].filter((tile) => tile.id !== `tile-${excludedId}` && !(tile.classList.contains('local-tile') && !tile.classList.contains('presentation-tile')));
@@ -571,6 +572,7 @@ async function createPeerConnection(id, name, initiator) {
 	connection.onconnectionstatechange = () => {
 		if (connection.connectionState === 'failed') {
 			if (!iceRestartInProgress) {
+				showMeetingToast('Could not connect to participant media. Configure TURN_URL, TURN_USERNAME, and TURN_CREDENTIAL in Render for mobile or restricted networks.', 'error');
 				iceRestartInProgress = true;
 				connection.restartIce();
 				setTimeout(() => { iceRestartInProgress = false; }, 2000);
@@ -1185,6 +1187,7 @@ $('cancel-wait-button').addEventListener('click', () => { socket.disconnect(); w
 $('leave-button').addEventListener('click', () => { localStream?.getTracks().forEach((track) => track.stop()); screenStream?.getTracks().forEach((track) => track.stop()); socket.disconnect(); window.location.reload(); });
 
 document.addEventListener('click', () => {
+	resumeMeetingAudio();
 	videoGrid.querySelectorAll('video:not([muted])').forEach((video) => video.play().catch(() => {}));
 }, { passive: true });
 
