@@ -383,7 +383,7 @@ body { background: var(--paper); }
 
 .meeting-duration { margin-left: 10px; padding: 4px 7px; border: 1px solid rgba(255, 255, 255, .14); border-radius: 5px; color: #d5ded8; font-variant-numeric: tabular-nums; font-size: 11px; }
 .video-tile { background: #202a25; }
-.video-tile video { display: block; width: 100%; height: 100%; object-fit: cover; background: transparent; }
+.video-tile video { display: block; width: 100%; height: 100%; object-fit: cover; background: transparent; pointer-events: none; }
 .video-grid.active-speaker-mode .video-tile.main-speaker video { object-fit: contain; background: #080c0a; }
 .video-grid.active-speaker-mode .participant-rail .video-tile video { object-fit: cover; object-position: center 30%; }
 .video-tile video.video-unavailable { opacity: 0; }

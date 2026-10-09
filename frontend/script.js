@@ -82,9 +82,13 @@ function addVideo(id, name, stream, local = false) {
 			if (tile.classList.contains('local-tile') && !tile.classList.contains('presentation-tile')) return;
 			if (pinnedParticipantId === id) {
 				pinnedParticipantId = null;
+				$('auto-speaker-button').classList.add('active');
+				$('auto-speaker-button').setAttribute('aria-pressed', 'true');
 				setActiveSpeaker(chooseFallbackSpeaker(id));
 			} else {
 				pinnedParticipantId = id;
+				$('auto-speaker-button').classList.remove('active');
+				$('auto-speaker-button').setAttribute('aria-pressed', 'false');
 				activeSpeakerCandidate = null;
 				setActiveSpeaker(id);
 			}
@@ -1108,6 +1112,16 @@ $('header-chat-button').addEventListener('click', () => {
 $('people-button').addEventListener('click', () => {
 	const shouldOpen = $('host-panel').classList.contains('hidden');
 	setHostPanelOpen(shouldOpen);
+});
+$('auto-speaker-button').addEventListener('click', () => {
+	pinnedParticipantId = null;
+	activeSpeakerCandidate = null;
+	activeSpeakerLastHeard = performance.now();
+	activeSpeakerLastSwitch = 0;
+	$('auto-speaker-button').classList.add('active');
+	$('auto-speaker-button').setAttribute('aria-pressed', 'true');
+	const speakerId = chooseFallbackSpeaker();
+	if (speakerId) setActiveSpeaker(speakerId);
 });
 $('close-chat').addEventListener('click', () => setChatPanelOpen(false));
 $('close-host').addEventListener('click', () => setHostPanelOpen(false));
