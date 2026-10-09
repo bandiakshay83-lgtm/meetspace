@@ -269,6 +269,7 @@ body { background: var(--paper); }
 .meeting-screen .wordmark { color: #f2f5f3; }
 .meeting-screen .room-label, .meeting-screen .participant-count { color: #aeb9b3; }
 .meeting-screen .audio-device-status { display: none !important; }
+.meeting-error:empty { display: none !important; }
 .meeting-screen .meeting-body { background: #101413; }
 .meeting-actions { display: flex; align-items: center; gap: 6px; }
 .header-action { position: relative; display: grid; width: 58px; min-height: 44px; place-items: center; gap: 1px; border-radius: 6px; background: transparent; color: #47564f; }
