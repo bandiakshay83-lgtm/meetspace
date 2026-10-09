@@ -1,5 +1,6 @@
 const socket = io();
 const peers = new Map();
+const pendingPeerConnections = new Map();
 let localStream;
 let screenStream;
 let currentRoom;
@@ -11,6 +12,7 @@ let isPresenter = false;
 let recorder;
 let recordingChunks = [];
 const participants = new Map();
+const activePresentations = new Set();
 let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
 let pendingQueue = [];
 let preferredAudioInputId = null;
@@ -74,6 +76,7 @@ function addVideo(id, name, stream, local = false) {
 		tile.querySelector('.avatar-letter').textContent = name.charAt(0).toUpperCase();
 		tile.querySelector('.avatar-name').textContent = local ? `${name} (You)` : name;
 		tile.querySelector('.tile-name').textContent = local ? `${name} (You)` : name;
+		tile.querySelector('.hand-indicator').classList.toggle('visible', Boolean(participants.get(id)?.handRaised));
 		tile.setAttribute('aria-label', `Make ${local ? 'your' : name + "'s"} video the main view`);
 		const activateTile = () => {
 			if (tile.classList.contains('local-tile') && !tile.classList.contains('presentation-tile')) return;
@@ -101,7 +104,7 @@ function addVideo(id, name, stream, local = false) {
 	video.playsInline = true;
 	video.setAttribute('playsinline', '');
 	video.setAttribute('autoplay', '');
-	video.srcObject = stream;
+	if (video.srcObject !== stream) video.srcObject = stream;
 	tile.classList.toggle('presentation-tile', id.startsWith('presentation-'));
 	applyAudioOutputPreference(video);
 	const playPreview = () => video.play().catch(() => {
@@ -204,47 +207,53 @@ function setActiveSpeaker(id) {
 }
 
 function updateActiveSpeaker() {
-	if (pinnedParticipantId && document.getElementById(`tile-${pinnedParticipantId}`)) {
-		setActiveSpeaker(pinnedParticipantId);
-	} else if (screenStream && document.getElementById(`tile-presentation-${socket.id}`)) {
+	if (screenStream && document.getElementById(`tile-presentation-${socket.id}`)) {
 		pinnedParticipantId = `presentation-${socket.id}`;
 		setActiveSpeaker(pinnedParticipantId);
-	} else if (!screenStream && audioAnalyzers.size && participants.size > 1) {
-		if (!activeSpeakerId) setActiveSpeaker(chooseFallbackSpeaker());
-		let loudestId = null;
-		let loudestLevel = 0;
-		for (const [id, entry] of audioAnalyzers) {
-			if (id === socket.id || id.startsWith('presentation-')) continue;
-			if (!document.getElementById(`tile-${id}`)) continue;
-			entry.analyser.getByteTimeDomainData(entry.data);
-			let sum = 0;
-			for (const value of entry.data) { const normalized = (value - 128) / 128; sum += normalized * normalized; }
-			const level = Math.sqrt(sum / entry.data.length);
-			if (level > loudestLevel) { loudestLevel = level; loudestId = id; }
-		}
-		const now = performance.now();
-		const currentLevel = activeSpeakerId ? (() => {
-			const current = audioAnalyzers.get(activeSpeakerId);
-			if (!current) return 0;
-			current.analyser.getByteTimeDomainData(current.data);
-			let sum = 0;
-			for (const value of current.data) { const normalized = (value - 128) / 128; sum += normalized * normalized; }
-			return Math.sqrt(sum / current.data.length);
-		})() : 0;
-		if (loudestId && loudestLevel > 0.055) {
-			activeSpeakerLastHeard = now;
-			if (activeSpeakerId === loudestId) {
-				activeSpeakerCandidate = null;
-			} else if (loudestLevel > currentLevel + 0.018 || !activeSpeakerId) {
-				if (activeSpeakerCandidate !== loudestId) { activeSpeakerCandidate = loudestId; activeSpeakerCandidateSince = now; }
-				if (now - activeSpeakerCandidateSince > 900 && now - activeSpeakerLastSwitch > 1400) setActiveSpeaker(loudestId);
+	} else {
+		const remotePresentationId = [...activePresentations].pop();
+		if (remotePresentationId && document.getElementById(`tile-presentation-${remotePresentationId}`)) {
+			pinnedParticipantId = `presentation-${remotePresentationId}`;
+			setActiveSpeaker(pinnedParticipantId);
+		} else if (pinnedParticipantId && document.getElementById(`tile-${pinnedParticipantId}`)) {
+			setActiveSpeaker(pinnedParticipantId);
+		} else if (!screenStream && audioAnalyzers.size && participants.size > 1) {
+			if (!activeSpeakerId) setActiveSpeaker(chooseFallbackSpeaker());
+			let loudestId = null;
+			let loudestLevel = 0;
+			for (const [id, entry] of audioAnalyzers) {
+				if (id === socket.id || id.startsWith('presentation-')) continue;
+				if (!document.getElementById(`tile-${id}`)) continue;
+				entry.analyser.getByteTimeDomainData(entry.data);
+				let sum = 0;
+				for (const value of entry.data) { const normalized = (value - 128) / 128; sum += normalized * normalized; }
+				const level = Math.sqrt(sum / entry.data.length);
+				if (level > loudestLevel) { loudestLevel = level; loudestId = id; }
 			}
-		} else if (activeSpeakerId && now - activeSpeakerLastHeard > 3200) {
-			activeSpeakerCandidate = null;
-			setActiveSpeaker(chooseFallbackSpeaker());
+			const now = performance.now();
+			const currentLevel = activeSpeakerId ? (() => {
+				const current = audioAnalyzers.get(activeSpeakerId);
+				if (!current) return 0;
+				current.analyser.getByteTimeDomainData(current.data);
+				let sum = 0;
+				for (const value of current.data) { const normalized = (value - 128) / 128; sum += normalized * normalized; }
+				return Math.sqrt(sum / current.data.length);
+			})() : 0;
+			if (loudestId && loudestLevel > 0.032) {
+				activeSpeakerLastHeard = now;
+				if (activeSpeakerId === loudestId) {
+					activeSpeakerCandidate = null;
+				} else if (loudestLevel > currentLevel + 0.012 || !activeSpeakerId) {
+					if (activeSpeakerCandidate !== loudestId) { activeSpeakerCandidate = loudestId; activeSpeakerCandidateSince = now; }
+					if (now - activeSpeakerCandidateSince > 650 && now - activeSpeakerLastSwitch > 1000) setActiveSpeaker(loudestId);
+				}
+			} else if (activeSpeakerId && now - activeSpeakerLastHeard > 3200) {
+				activeSpeakerCandidate = null;
+				setActiveSpeaker(chooseFallbackSpeaker());
+			}
+		} else if (activeSpeakerId && participants.size <= 1) {
+			setActiveSpeaker(null);
 		}
-	} else if (activeSpeakerId && participants.size <= 1) {
-		setActiveSpeaker(null);
 	}
 	requestAnimationFrame(updateActiveSpeaker);
 }
@@ -305,6 +314,23 @@ function publishMediaState() {
 function updateCount() {
 	$('participant-count').textContent = participants.size || videoGrid.querySelectorAll('.video-tile').length;
 	if (activeSpeakerId) setActiveSpeaker(activeSpeakerId);
+}
+
+function showRemotePresentation(id) {
+	if (!activePresentations.has(id)) return;
+	const peer = peers.get(id);
+	const videoTrack = peer?.remoteScreenStream.getVideoTracks().find((track) => track.readyState === 'live');
+	if (!peer || !videoTrack || videoTrack.muted) return;
+	const tileId = `presentation-${id}`;
+	addVideo(tileId, `${peer.name}'s screen`, peer.remoteScreenStream);
+	const video = document.querySelector(`#tile-${tileId} video`);
+	const promotePresentation = () => {
+		if (!activePresentations.has(id) || !video.videoWidth || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+		pinnedParticipantId = tileId;
+		setActiveSpeaker(tileId);
+	};
+	if (video.videoWidth && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) promotePresentation();
+	else video.addEventListener('loadeddata', promotePresentation, { once: true });
 }
 
 function showMeetingToast(message, type = 'info') {
@@ -431,17 +457,75 @@ async function ensureLocalAudioTrack() {
 
 async function createPeer(id, name, initiator) {
 	if (peers.has(id)) return peers.get(id).connection;
+	if (pendingPeerConnections.has(id)) return pendingPeerConnections.get(id);
+	const pendingConnection = createPeerConnection(id, name, initiator);
+	pendingPeerConnections.set(id, pendingConnection);
+	try {
+		return await pendingConnection;
+	} finally {
+		if (pendingPeerConnections.get(id) === pendingConnection) pendingPeerConnections.delete(id);
+	}
+}
+
+function isScreenMediaTrack(peer, transceiver) {
+	if (!peer || !transceiver) return false;
+	if (transceiver === peer.screenVideoTransceiver || transceiver === peer.screenAudioTransceiver) return true;
+	if (transceiver.mid === null) return false;
+	const kind = transceiver.receiver.track?.kind;
+	const cameraTransceiver = kind === 'video' ? peer.cameraVideoTransceiver : peer.cameraAudioTransceiver;
+	if (cameraTransceiver?.mid === transceiver.mid) return false;
+	return !cameraTransceiver || transceiver.mid !== cameraTransceiver.mid;
+}
+
+async function synchronizeScreenTransceivers(peer, answeringOffer = false) {
+	const transceivers = peer.connection.getTransceivers();
+	const findNegotiated = (current, kind) => current?.mid !== null
+		? current
+		: transceivers.find((transceiver) => transceiver.mid !== null && !transceiver.sender.track && transceiver.receiver.track?.kind === kind) || current;
+	const videoTransceiver = findNegotiated(peer.screenVideoTransceiver, 'video');
+	const audioTransceiver = findNegotiated(peer.screenAudioTransceiver, 'audio');
+	if (answeringOffer) {
+		videoTransceiver.direction = 'sendrecv';
+		audioTransceiver.direction = 'sendrecv';
+	}
+	if (peer.screenVideoSender !== videoTransceiver.sender && peer.screenVideoSender.track) {
+		await peer.screenVideoSender.replaceTrack(null).catch(() => {});
+	}
+	if (peer.screenAudioSender !== audioTransceiver.sender && peer.screenAudioSender.track) {
+		await peer.screenAudioSender.replaceTrack(null).catch(() => {});
+	}
+	peer.screenVideoTransceiver = videoTransceiver;
+	peer.screenAudioTransceiver = audioTransceiver;
+	peer.screenVideoSender = videoTransceiver.sender;
+	peer.screenAudioSender = audioTransceiver.sender;
+	if (screenStream) {
+		const videoTrack = screenStream.getVideoTracks()[0];
+		const audioTrack = screenStream.getAudioTracks()[0] || null;
+		if (videoTrack && peer.screenVideoSender.track !== videoTrack) await peer.screenVideoSender.replaceTrack(videoTrack);
+		if (peer.screenAudioSender.track !== audioTrack) await peer.screenAudioSender.replaceTrack(audioTrack);
+	}
+}
+
+async function createPeerConnection(id, name, initiator) {
 	if (!localStream) return null;
 	await ensureLocalAudioTrack();
 	const connection = new RTCPeerConnection({ iceServers });
 	const videoTrack = localStream.getVideoTracks()[0];
 	const outgoingStream = new MediaStream([...localStream.getAudioTracks(), ...(videoTrack ? [videoTrack] : [])]);
-	outgoingStream.getTracks().forEach((track) => connection.addTrack(track, outgoingStream));
+	let cameraVideoTransceiver;
+	let cameraAudioTransceiver;
+	outgoingStream.getTracks().forEach((track) => {
+		const sender = connection.addTrack(track, outgoingStream);
+		const transceiver = connection.getTransceivers().find((candidate) => candidate.sender === sender);
+		if (track.kind === 'video') cameraVideoTransceiver = transceiver;
+		else if (track.kind === 'audio') cameraAudioTransceiver = transceiver;
+	});
 	const screenVideoTransceiver = connection.addTransceiver('video', { direction: 'sendrecv' });
 	const screenAudioTransceiver = connection.addTransceiver('audio', { direction: 'sendrecv' });
 	const remoteStream = new MediaStream();
 	const remoteScreenStream = new MediaStream();
-	peers.set(id, { connection, name, screenVideoSender: screenVideoTransceiver.sender, screenAudioSender: screenAudioTransceiver.sender, remoteStream, remoteScreenStream });
+	const peerState = { connection, name, cameraVideoTransceiver, cameraAudioTransceiver, screenVideoTransceiver, screenAudioTransceiver, screenVideoSender: screenVideoTransceiver.sender, screenAudioSender: screenAudioTransceiver.sender, remoteStream, remoteScreenStream };
+	peers.set(id, peerState);
 	if (screenStream) {
 		const sharedVideo = screenStream.getVideoTracks()[0];
 		const sharedAudio = screenStream.getAudioTracks()[0];
@@ -450,27 +534,34 @@ async function createPeer(id, name, initiator) {
 	}
 	connection.onicecandidate = ({ candidate }) => candidate && socket.emit('signal', { target: id, signal: { candidate } });
 	connection.ontrack = ({ track, transceiver }) => {
-		const transceiverMid = transceiver?.mid;
-		const isScreenTrack = transceiver === screenVideoTransceiver
-			|| transceiver === screenAudioTransceiver
-			|| Boolean(transceiverMid && [screenVideoTransceiver.mid, screenAudioTransceiver.mid].includes(transceiverMid));
+		const peer = peers.get(id);
+		const isScreenTrack = isScreenMediaTrack(peer, transceiver);
+		if (isScreenTrack && peer) {
+			if (track.kind === 'video') {
+				peer.screenVideoTransceiver = transceiver;
+				peer.screenVideoSender = transceiver.sender;
+			} else if (track.kind === 'audio') {
+				peer.screenAudioTransceiver = transceiver;
+				peer.screenAudioSender = transceiver.sender;
+			}
+		}
 		const stream = isScreenTrack ? remoteScreenStream : remoteStream;
 		if (!stream.getTracks().some((receivedTrack) => receivedTrack.id === track.id)) stream.addTrack(track);
 		const tileId = isScreenTrack ? `presentation-${id}` : id;
 		const tileName = isScreenTrack ? `${name}'s screen` : name;
-		addVideo(tileId, tileName, stream);
 		if (isScreenTrack) {
-			pinnedParticipantId = tileId;
-			setActiveSpeaker(tileId);
+			if (track.kind !== 'video') return;
+			if (!track.muted) showRemotePresentation(id);
+			track.addEventListener('unmute', () => showRemotePresentation(id), { once: true });
+			return;
+		}
+		addVideo(tileId, tileName, stream);
+		if (track.kind === 'video') {
 			track.addEventListener('unmute', () => {
-				const presentationTile = document.getElementById(`tile-${tileId}`);
-				const presentationVideo = presentationTile?.querySelector('video');
-				if (!presentationTile || !presentationVideo) return;
 				updateBadges(tileId);
-				presentationVideo.play().catch(() => {});
-				pinnedParticipantId = tileId;
-				setActiveSpeaker(tileId);
+				document.querySelector(`#tile-${tileId} video`)?.play().catch(() => {});
 			}, { once: true });
+			track.addEventListener('mute', () => updateBadges(tileId));
 		}
 	};
 	connection.onconnectionstatechange = () => {
@@ -497,6 +588,7 @@ async function createPeer(id, name, initiator) {
 	if (initiator) {
 		const offer = await connection.createOffer();
 		await connection.setLocalDescription(offer);
+		await synchronizeScreenTransceivers(peerState);
 		socket.emit('signal', { target: id, signal: { description: connection.localDescription } });
 	}
 	return connection;
@@ -655,10 +747,13 @@ socket.on('room-users', async (users) => {
 });
 socket.on('user-joined', ({ id, name }) => { participants.set(id, { name, isHost: false, role: 'participant', mediaState: { audioMuted: false, videoMuted: false } }); renderParticipants(); return createPeer(id, name, false); });
 socket.on('signal', async ({ sender, signal }) => {
-	const peer = peers.get(sender) || { connection: await createPeer(sender, 'Guest', false) };
+	if (!peers.has(sender)) await createPeer(sender, 'Guest', false);
+	const peer = peers.get(sender);
+	if (!peer) return;
 	const connection = peer.connection;
 	if (signal.description) {
 		await connection.setRemoteDescription(signal.description);
+		await synchronizeScreenTransceivers(peer, signal.description.type === 'offer');
 		if (signal.description.type === 'offer') {
 			const answer = await connection.createAnswer();
 			await connection.setLocalDescription(answer);
@@ -667,11 +762,16 @@ socket.on('signal', async ({ sender, signal }) => {
 	} else if (signal.candidate) await connection.addIceCandidate(signal.candidate).catch(() => {});
 });
 socket.on('presentation-stopped', ({ id }) => {
+	activePresentations.delete(id);
 	const presentationId = `presentation-${id}`;
 	document.getElementById(`tile-${presentationId}`)?.remove();
 	if (pinnedParticipantId === presentationId) pinnedParticipantId = null;
 	if (activeSpeakerId === presentationId) setActiveSpeaker(chooseFallbackSpeaker(presentationId));
 	updateCount();
+});
+socket.on('presentation-started', ({ id }) => {
+	activePresentations.add(id);
+	showRemotePresentation(id);
 });
 socket.on('user-left', (id) => { participants.delete(id); renderParticipants(); removePeer(id); });
 socket.on('join-error', (message) => { $('join-error').textContent = message; });
@@ -946,9 +1046,8 @@ $('share-button').addEventListener('click', async () => {
 	}
 });
 function stopSharing() {
-	const track = localStream?.getVideoTracks()[0];
 	for (const { screenVideoSender, screenAudioSender } of peers.values()) {
-		if (screenVideoSender && track) screenVideoSender.replaceTrack(track);
+		screenVideoSender?.replaceTrack(null).catch(() => {});
 		screenAudioSender?.replaceTrack(null).catch(() => {});
 	}
 	screenStream?.getTracks().forEach((item) => item.stop());
